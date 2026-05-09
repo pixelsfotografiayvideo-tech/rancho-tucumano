@@ -932,7 +932,7 @@
   <div class="info-row"><span class="info-icon">📍</span> Isabel la Católica 1013, Alta Córdoba, Córdoba</div>
   <div class="info-row"><span class="info-icon">🕐</span> Todos los días: 11:00 – 16:00 / 20:00 – 01:00</div>
   <div class="info-row"><span class="info-icon">📞</span> +54 9 351 736-4379</div>
-  <div class="info-row"><span class="info-icon">🚚</span> Envío disponible · Radio 100m desde el local</div>
+  <div class="info-row"><span class="info-icon">🚚</span> Envío disponible · Hasta 5 km desde el local</div>
   <div class="info-row"><span class="info-icon">📷</span> <a href="https://www.instagram.com/ranchotucumano.altacba/" style="color:var(--gold-light);" target="_blank">@ranchotucumano.altacba</a></div>
 </div>
 
@@ -1411,7 +1411,7 @@
             <span>📍</span>
             <span id="zoneMsg">Ingresá tu dirección para verificar la zona de entrega.</span>
           </div>
-          <p style="font-size:0.72rem; color:var(--text-muted); margin-top:0.4rem;">⚠️ Solo entregamos en un radio de 100 metros desde Isabel la Católica 1013, Alta Córdoba.</p>
+          <p style="font-size:0.72rem; color:var(--text-muted); margin-top:0.4rem;">⚠️ Solo entregamos en un radio de 5 km desde Isabel la Católica 1013, Alta Córdoba.</p>
 
           <!-- Tipo de edificación -->
           <div class="form-group" id="groupEdificacion" style="margin-top:0.8rem; display:none;">
@@ -1481,7 +1481,7 @@
   // ── CONFIG ──
   const LOCAL_LAT = -31.3975;   // Isabel la Católica 1013, Alta Córdoba
   const LOCAL_LNG = -64.1858;
-  const RADIO_METROS = 100;
+  const RADIO_METROS = 5000;
   const WHATSAPP_NUMBER = '5493517364379';
 
   // ── STATE ──
@@ -1500,8 +1500,37 @@
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   }
 
-  // ── ZONE CHECK via Nominatim geocoder ──
+  // ── ZONE CHECK (Nominatim + Photon fallback, 5 km) ──
   let zoneTimer = null;
+
+  async function geocodeNominatim(addr) {
+    // Intento 1: con barrio
+    const q1 = encodeURIComponent(addr + ', Córdoba, Argentina');
+    const r1 = await fetch(`https://nominatim.openstreetmap.org/search?q=${q1}&format=json&limit=1&countrycodes=ar`, {headers:{'Accept-Language':'es'}});
+    const d1 = await r1.json();
+    if (d1 && d1.length > 0) return { lat: parseFloat(d1[0].lat), lon: parseFloat(d1[0].lon) };
+
+    // Intento 2: solo dirección + Córdoba (sin barrio)
+    const stripped = addr.replace(/(alta córdoba|alberdi|general paz|nueva córdoba|güemes|cerro|jardín)/gi, '').trim();
+    const q2 = encodeURIComponent(stripped + ', Córdoba, Argentina');
+    const r2 = await fetch(`https://nominatim.openstreetmap.org/search?q=${q2}&format=json&limit=1&countrycodes=ar`, {headers:{'Accept-Language':'es'}});
+    const d2 = await r2.json();
+    if (d2 && d2.length > 0) return { lat: parseFloat(d2[0].lat), lon: parseFloat(d2[0].lon) };
+
+    return null;
+  }
+
+  async function geocodePhoton(addr) {
+    const q = encodeURIComponent(addr + ' Córdoba Argentina');
+    const r = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1&lang=es&bbox=-64.35,-31.55,-64.05,-31.25`);
+    const d = await r.json();
+    if (d && d.features && d.features.length > 0) {
+      const [lon, lat] = d.features[0].geometry.coordinates;
+      return { lat, lon };
+    }
+    return null;
+  }
+
   function checkZone() {
     const addr = document.getElementById('inputDireccion').value.trim();
     const statusEl = document.getElementById('zoneStatus');
@@ -1518,37 +1547,43 @@
     }
 
     statusEl.className = 'zone-info neutral';
-    msgEl.textContent = 'Verificando zona…';
+    msgEl.textContent = '📍 Verificando zona…';
 
     clearTimeout(zoneTimer);
     zoneTimer = setTimeout(async () => {
       try {
-        const query = encodeURIComponent(addr + ', Alta Córdoba, Córdoba, Argentina');
-        const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${query}&format=json&limit=1`);
-        const data = await res.json();
-        if (!data || data.length === 0) {
+        // Intentar Nominatim primero, luego Photon como fallback
+        let result = await geocodeNominatim(addr);
+        if (!result) result = await geocodePhoton(addr);
+
+        if (!result) {
           statusEl.className = 'zone-info warn';
-          msgEl.textContent = 'No pudimos encontrar esa dirección. Revisala e intentá de nuevo.';
+          msgEl.textContent = '📌 No pudimos encontrar esa dirección. Escribila con calle y número, por ejemplo: "Isabel la Católica 1020".';
           return;
         }
-        const { lat, lon } = data[0];
-        const dist = distancia(parseFloat(lat), parseFloat(lon), LOCAL_LAT, LOCAL_LNG);
+
+        const dist = distancia(result.lat, result.lon, LOCAL_LAT, LOCAL_LNG);
+        const km = (dist / 1000).toFixed(1);
+
         if (dist <= RADIO_METROS) {
           zonaOk = true;
           statusEl.className = 'zone-info ok';
-          msgEl.textContent = `✅ ¡Genial! Tu dirección está dentro de nuestra zona de entrega (${Math.round(dist)}m del local).`;
+          msgEl.textContent = `✅ ¡Genial! Tu dirección está dentro de nuestra zona de entrega (a ${km} km del local).`;
           edificEl.style.display = 'block';
         } else {
           zonaOk = false;
           statusEl.className = 'zone-info warn';
-          msgEl.textContent = `⚠️ Lo sentimos, tu dirección se encuentra fuera de la zona de entrega (${Math.round(dist)}m del local). Solo llegamos hasta 100m.`;
+          msgEl.textContent = `⚠️ Lo sentimos, tu dirección queda a ${km} km del local. Solo entregamos hasta 5 km desde Isabel la Católica 1013, Alta Córdoba.`;
           edificEl.style.display = 'none';
         }
       } catch(e) {
-        statusEl.className = 'zone-info warn';
-        msgEl.textContent = 'No pudimos verificar la zona. Revisá tu conexión.';
+        // Si hay error de red, permitir continuar con advertencia
+        zonaOk = true;
+        statusEl.className = 'zone-info neutral';
+        msgEl.textContent = '⚠️ No pudimos verificar la zona automáticamente. Tu pedido se enviará y confirmaremos si podemos llegar.';
+        edificEl.style.display = 'block';
       }
-    }, 700);
+    }, 800);
   }
 
   // ── MODAL PRODUCT ──
@@ -1746,7 +1781,7 @@
       const dir = document.getElementById('inputDireccion').value.trim();
       if (!dir) { document.getElementById('errDireccion').classList.add('visible'); ok = false; }
       else document.getElementById('errDireccion').classList.remove('visible');
-      if (!zonaOk) { alert('Lo sentimos, tu dirección está fuera de nuestra zona de entrega (radio 100m).'); ok = false; }
+      if (!zonaOk) { alert('Lo sentimos, tu dirección está fuera de nuestra zona de entrega (radio 5 km).'); ok = false; }
       const edificacion = document.querySelector('[name=edificacion]:checked');
       if (!edificacion) { document.getElementById('errEdificacion').classList.add('visible'); ok = false; }
       else document.getElementById('errEdificacion').classList.remove('visible');
